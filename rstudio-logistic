@@ -1,0 +1,423 @@
+# =====================================================================
+# Regressão Logística Melhorada - Tradução para R
+# =====================================================================
+
+# Carregando pacotes
+library(readxl)
+library(writexl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(car)         # Para cálculo do VIF
+library(caret)       # Para split estratificado (train/test)
+library(fastDummies) # Para criação de variáveis dummy
+library(stringr)     # Para manipulação de texto
+
+# Ignorar avisos visuais (equivalente ao warnings.filterwarnings)
+options(warn = -1)
+
+# =====================================================================
+# --- 1. CONFIGURAÇÃO DA AUTOMAÇÃO (PASTAS E FICHEIROS) ---
+# =====================================================================
+pasta_origem <- "C:/Users/juliano.barbosa/Documents/excel_trans/credisis/Bases_por_Agencia/agencias/ags"
+
+# Pega todos os arquivos xlsx na pasta
+arquivos_excel <- list.files(pasta_origem, pattern = "\\.xlsx$", full.names = TRUE)
+
+cat(sprintf("🚀 INICIANDO AUTOMAÇÃO REGRESSÃO LOGÍSTICA OTIMIZADA: %d ficheiros encontrados.\n\n", length(arquivos_excel)))
+cat("⚠️ Aviso: A Regressão Logística demora MUITO mais tempo que o Random Forest.\n")
+cat("☕ O robô está a fazer o cálculo Stepwise passo a passo. Por favor, NÃO INTERROMPA o processo!\n\n")
+
+colunas_excluir_inicio <- c(
+  'conta', 'agencia', 'pa', 'cpf_cnpj.1', 'nome', 
+  'tipo_de_conta', 'celular', 'nascimento', 'nome_gerente', 'profissao_atividade', 
+  'profissao_adicional', 'data_abertura', 'situacao_imovel', 
+  'sexo', 'vinculo', 'estado_civil', 'PR'
+)
+
+colunas_para_escalar <- c(
+  'renda_faturamento', 'outras_rendas', 'renda_conjuge', 'renda_familiar', 
+  'Idade', 'Tempo_de_coop', 'dependentes', 'quant_contrat_credit', 
+  'saldomedio_negativo', 'saldomedio_positivo', 'saldo_credit'
+)
+
+colunas_dinheiro <- c(
+  'renda_faturamento', 'outras_rendas', 'renda_conjuge', 'renda_familiar', 
+  'saldomedio_negativo', 'saldomedio_positivo', 'saldo_credit'
+)
+
+colunas_exportacao_final <- c(
+  'agencia', 'pa', 'cpf_cnpj', 'conta', 'nome', 
+  'renda_faturamento', 'outras_rendas', 'saldomedio_positivo'
+)
+
+# =====================================================================
+# --- 2. O LOOP MÁGICO ---
+# =====================================================================
+for (i in seq_along(arquivos_excel)) {
+  caminho_arquivo <- arquivos_excel[i]
+  nome_arquivo <- basename(caminho_arquivo)
+  nome_base <- gsub("\\.xlsx$", "", nome_arquivo)
+  
+  cat(strrep("-", 70), "\n")
+  cat(sprintf("⏳ [%d/%d] A PROCESSAR LOGÍSTICA: %s ...\n", i, length(arquivos_excel), nome_base))
+  
+  tryCatch({
+    df_analise <- read_excel(caminho_arquivo)
+    
+    if (nrow(df_analise) == 0) {
+      cat("   ⚠️ Base vazia. A saltar...\n")
+      next
+    }
+    
+    # Adicionando um ID de linha interno para não perder o rastro ao quebrar treino/teste
+    df_analise$internal_row_id <- 1:nrow(df_analise)
+    
+    # =====================================================================
+    # --- IMPLEMENTAÇÃO DA ESTRUTURA LÓGICA OTIMIZADA ---
+    # =====================================================================
+    
+    if ("tipo_conta_credisis kids" %in% colnames(df_analise)) {
+      qtd_kids <- sum(df_analise$`tipo_conta_credisis kids` == 1, na.rm = TRUE)
+      df_analise <- df_analise %>% filter(`tipo_conta_credisis kids` != 1 | is.na(`tipo_conta_credisis kids`))
+      if (qtd_kids > 0) {
+        cat(sprintf("   ⚙️ Passo 1: %d clientes 'CrediSIS Kids' excluídos da base.\n", qtd_kids))
+      }
+    }
+    
+    # Salvar dados originais para o final
+    cols_para_salvar <- intersect(c(colunas_exportacao_final, "internal_row_id"), colnames(df_analise))
+    df_dados_originais <- df_analise[, cols_para_salvar]
+    
+    colunas_passo_2 <- c(
+      'tipo_conta_credisis kids', 'tipo_conta_funcionario', 'tipo_pessoa_juridica', 
+      'sexo_pessoa juridica', 'estado_civil_pessoa juridica'
+    )
+    df_analise <- df_analise %>% select(-any_of(colunas_passo_2))
+    
+    # =====================================================================
+    # --- NOVO: AGRUPAMENTO E DUMMIES DE NÍVEL EDUCACIONAL ---
+    # =====================================================================
+    if ("nivel_educacional" %in% colnames(df_analise)) {
+      df_analise$nivel_educacional <- str_trim(as.character(df_analise$nivel_educacional))
+      
+      df_analise <- df_analise %>%
+        mutate(nivel_educacional = case_when(
+          nivel_educacional %in% c("Superior Completo", "Superior Incompleto") ~ "Superior_Completo_Incompleto",
+          nivel_educacional %in% c("Não informado", "Sem instrução") ~ "Sem_Instrucao_Nao_Informado",
+          nivel_educacional %in% c("Pós Graduação", "Técnico") ~ "Pos_Graduacao_Tecnico",
+          nivel_educacional %in% c("Doutorado", "Mestrado") ~ "Mestrado_Doutorado",
+          nivel_educacional == "1º Grau" ~ "1_Grau",
+          nivel_educacional == "2º Grau" ~ "2_Grau",
+          TRUE ~ nivel_educacional
+        ))
+      
+      df_analise <- dummy_cols(df_analise, select_columns = "nivel_educacional", remove_selected_columns = TRUE)
+      cat("   ⚙️ Nível Educacional agrupado e Dummies criadas com sucesso.\n")
+    }
+    
+    colunas_excluir_fisica <- c(
+      'tipo_empresa_me_n_opt', 'tipo_empresa_me_optante', 'tipo_empresa_media_empresa', 
+      'tipo_empresa_nao_informado', 'tipo_empresa_outros', 'tipo_empresa_peq_empresa', 
+      'tipo_empresa_pessoa_fisica', 'tipo_constituicao_cooperativa', 'tipo_constituicao_emp_individual', 
+      'tipo_constituicao_limitada', 'tipo_constituicao_nao_informado', 'tipo_constituicao_org_religiosa', 
+      'tipo_constituicao_pf', 'tipo_constituicao_scd_anonima', 'tipo_constituicao_sociedade_simples', 
+      'tipo_constituicao_terceiro_setor_associacoes', 'regime_tributo_lucro real', 'regime_tributo_mei', 
+      'regime_tributo_nao_informado', 'regime_tributo_pf', 'regime_tributo_simples nacional'
+    )
+    
+    colunas_excluir_juridica <- c(
+      'regime_tributo_pf', 'tipo_constituicao_pf', 'Macro_Atividade', 
+      'Macro_Profissoes_adc_Agronegócio e Extrativismo', 'Macro_Profissoes_adc_Artes, Esportes e Religião', 
+      'Macro_Profissoes_adc_Comércio e Comunicação', 'Macro_Profissoes_adc_Educação e Social', 
+      'Macro_Profissoes_adc_Engenharia, TI e Ciências', 'Macro_Profissoes_adc_Gestão e Executivos', 
+      'Macro_Profissoes_adc_Inativos e Aposentados', 'Macro_Profissoes_adc_Não Informado', 
+      'Macro_Profissoes_adc_Operacional, Construção e Logística', 'Macro_Profissoes_adc_Outros', 
+      'Macro_Profissoes_adc_Saúde e Bem-Estar', 'Macro_Profissoes_adc_Serviços Gerais e Alimentação', 
+      'Macro_Profissoes_adc_Setor Público e Jurídico', 'sexo_masculino', 
+      'estado_civil_divorciado', 'estado_civil_solteiro', 'estado_civil_viuvo'
+    )
+    
+    if (grepl("Fisica", nome_base) || grepl("Produtor_Rural", nome_base)) {
+      df_analise <- df_analise %>% select(-any_of(colunas_excluir_fisica))
+    } else if (grepl("Juridica", nome_base)) {
+      df_analise <- df_analise %>% select(-any_of(colunas_excluir_juridica))
+    }
+    
+    col_alvo <- "flag_investidor"
+    colunas_identificacao <- "cpf_cnpj"
+    
+    if (!(col_alvo %in% colnames(df_analise))) next
+    
+    if (length(unique(df_analise[[col_alvo]])) < 2) {
+      cat("   ⚠️ IMPOSSÍVEL TREINAR: Agência só possui clientes de 1 tipo (0 ou 1). A saltar...\n")
+      next
+    }
+    
+    df_analise <- df_analise %>% select(-any_of(colunas_excluir_inicio))
+    
+    if ("Descr_reduzida" %in% colnames(df_analise)) {
+      df_analise <- dummy_cols(df_analise, select_columns = "Descr_reduzida", remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+    }
+    
+    # Converte para numerico e NAs para 0
+    for (col in colunas_para_escalar) {
+      if (col %in% colnames(df_analise)) {
+        df_analise[[col]] <- as.numeric(df_analise[[col]])
+      }
+    }
+    df_analise[is.na(df_analise)] <- 0
+    
+    # =====================================================================
+    # --- MELHORIA 1: TRATAMENTO DE OUTLIERS (WINSORIZATION 1% e 99%) ---
+    # =====================================================================
+    cat("   ⚙️ Tratando Outliers para evitar distorções...\n")
+    for (col in colunas_para_escalar) {
+      if (col %in% colnames(df_analise)) {
+        limites <- quantile(df_analise[[col]], probs = c(0.01, 0.99), na.rm = TRUE)
+        df_analise[[col]] <- pmax(pmin(df_analise[[col]], limites[2]), limites[1])
+      }
+    }
+    
+    # =====================================================================
+    # --- MELHORIA 2: NÃO-LINEARIDADE E INTERAÇÕES ---
+    # =====================================================================
+    cat("   ⚙️ Criando Interações e Não-Linearidade...\n")
+    # 1. Log nas variáveis de dinheiro
+    for (col in colunas_dinheiro) {
+      if (col %in% colnames(df_analise)) {
+        df_analise[[col]] <- log1p(abs(df_analise[[col]]))
+      }
+    }
+    
+    # 2. Interações Estratégicas
+    if (all(c("Tempo_de_coop", "Idade") %in% colnames(df_analise))) {
+      df_analise$Int_Maturidade_Inst <- df_analise$Idade * df_analise$Tempo_de_coop
+    }
+    if (all(c("saldomedio_positivo", "renda_faturamento") %in% colnames(df_analise))) {
+      df_analise$Int_Poder_Retencao <- df_analise$saldomedio_positivo * df_analise$renda_faturamento
+    }
+    
+    # =====================================================================
+    # --- NOVA EXPORTAÇÃO: A BASE TRATADA ANTES DA REGRESSÃO ---
+    # =====================================================================
+    cat("   💾 Exportando a Base de Dados Tratada (Pré-Regressão)...\n")
+    nome_base_tratada <- file.path(pasta_origem, sprintf('Base_Tratada_PreRegressao_%s.xlsx', nome_base))
+    write_xlsx(df_analise %>% select(-internal_row_id), nome_base_tratada)
+    # =====================================================================
+    
+    # Retirar identificação e colunas de texto
+    df_analise <- df_analise %>% select(where(is.numeric), internal_row_id)
+    df_analise <- df_analise %>% select(-any_of(colunas_identificacao))
+    
+    # Nomes de colunas no R não podem ter espaços ou caracteres especiais em fórmulas (ajuste seguro)
+    names(df_analise) <- make.names(names(df_analise), unique = TRUE)
+    col_alvo_safe <- make.names(col_alvo)
+    
+    # Train Test Split (Estratificado)
+    set.seed(42)
+    train_index <- createDataPartition(df_analise[[col_alvo_safe]], p = 0.8, list = FALSE)
+    df_train <- df_analise[train_index, ]
+    df_test <- df_analise[-train_index, ]
+    
+    # Scaler
+    colunas_para_escalar_final <- make.names(c(colunas_para_escalar, 'Int_Maturidade_Inst', 'Int_Poder_Retencao'))
+    cols_existentes <- intersect(colunas_para_escalar_final, colnames(df_train))
+    
+    if (length(cols_existentes) > 0) {
+      preProcValues <- preProcess(df_train[, cols_existentes], method = c("center", "scale"))
+      df_train[, cols_existentes] <- predict(preProcValues, df_train[, cols_existentes])
+      df_test[, cols_existentes]  <- predict(preProcValues, df_test[, cols_existentes])
+    }
+    
+    # Separando X e y internamente
+    y_train <- df_train[[col_alvo_safe]]
+    X_train <- df_train %>% select(-all_of(col_alvo_safe), -internal_row_id)
+    
+    # --- FILTRO VIF ---
+    # Remove variância zero
+    var_cols <- sapply(X_train, function(x) length(unique(x)) > 1)
+    X_train <- X_train[, var_cols]
+    
+    cat(sprintf("   ⚙️ Calculando VIF para remover colinearidade (%d colunas)...", ncol(X_train)))
+    
+    # Loop VIF
+    repeat {
+      # Cria um modelo linear temporário rápido para checar colinearidade
+      formula_vif <- as.formula(paste("y_train ~", paste(colnames(X_train), collapse = "+")))
+      
+      # Try/catch para tratar alias perfeito
+      modelo_temp <- try(lm(formula_vif, data = cbind(X_train, y_train)), silent = TRUE)
+      
+      if (inherits(modelo_temp, "try-error")) {
+        # Se quebrar, adiciona um ruído mínimo (como no Python) e tenta de novo
+        X_train <- X_train + matrix(rnorm(n = nrow(X_train)*ncol(X_train), mean = 0, sd = 1e-6), nrow = nrow(X_train))
+        next
+      }
+      
+      # Verificar aliasing perfeito e remover
+      aliased <- alias(modelo_temp)$Complete
+      if (!is.null(aliased)) {
+         X_train <- X_train %>% select(-any_of(rownames(aliased)))
+         next
+      }
+      
+      vifs <- try(car::vif(modelo_temp), silent = TRUE)
+      if (inherits(vifs, "try-error") || length(vifs) == 0) break
+      
+      max_vif <- max(vifs)
+      if (max_vif > 10) {
+        # Pega o nome da coluna com maior VIF
+        if (!is.null(names(vifs))) {
+           col_to_drop <- names(vifs)[which.max(vifs)]
+        } else {
+           col_to_drop <- colnames(X_train)[which.max(vifs)]
+        }
+        X_train <- X_train %>% select(-all_of(col_to_drop))
+      } else {
+        break
+      }
+    }
+    cat(" Feito!\n")
+    
+    # --- MODELAGEM STEPWISE COM P-VALUE ---
+    colunas_selecionadas <- colnames(X_train)
+    cat(sprintf("   ⚙️ Iniciando Stepwise com %d variáveis. (Isto pode demorar...)\n", length(colunas_selecionadas)))
+    
+    repeat {
+      formula_step <- as.formula(paste("y_train ~", paste(colunas_selecionadas, collapse = " + ")))
+      modelo_step <- try(glm(formula_step, family = binomial(link = "logit"), data = cbind(X_train, y_train)), silent = TRUE)
+      
+      if (inherits(modelo_step, "try-error")) {
+        if (length(colunas_selecionadas) > 1) {
+          colunas_selecionadas <- colunas_selecionadas[-length(colunas_selecionadas)]
+          next
+        } else {
+          cat("\n      Stepwise parou por erro de matriz.\n")
+          break
+        }
+      }
+      
+      # Pega os p-values tirando o intercepto
+      sumario <- summary(modelo_step)
+      p_values <- sumario$coefficients[-1, 4] 
+      
+      if (length(p_values) == 0) break
+      
+      max_p <- max(p_values, na.rm = TRUE)
+      
+      if (max_p > 0.05) {
+        var_to_remove <- names(p_values)[which.max(p_values)]
+        colunas_selecionadas <- setdiff(colunas_selecionadas, var_to_remove)
+        cat(sprintf("\r      Restam %d variáveis...", length(colunas_selecionadas)))
+      } else {
+        cat("\n      Stepwise concluído com sucesso!\n")
+        break
+      }
+    }
+    
+    # --- MODELO FINAL E EXPORTAÇÕES ---
+    formula_final <- as.formula(paste("y_train ~", paste(colunas_selecionadas, collapse = " + ")))
+    modelo_final <- glm(formula_final, family = binomial(link = "logit"), data = cbind(X_train, y_train))
+    
+    # Teste
+    y_prob_test <- predict(modelo_final, newdata = df_test, type = "response")
+    y_pred_test <- ifelse(y_prob_test > 0.5, 1, 0)
+    
+    acc <- sum(y_pred_test == df_test[[col_alvo_safe]], na.rm=TRUE) / nrow(df_test)
+    
+    # Pseudo R2 (McFadden)
+    null_mod <- glm(y_train ~ 1, family = binomial)
+    pseudo_r2 <- 1 - logLik(modelo_final)/logLik(null_mod)
+    
+    cat(sprintf("   ✅ Logística Treinada! Acurácia: %.2f%% | Pseudo R²: %.4f\n", acc * 100, pseudo_r2))
+    
+    # Extração das métricas para a tabela
+    coeficientes <- summary(modelo_final)$coefficients
+    p_values_final <- coeficientes[, 4]
+    betas <- coeficientes[, 1]
+    odds_ratios <- exp(betas)
+    
+    # Intervalos de confiança
+    ic <- exp(confint.default(modelo_final))
+    
+    conf_grafico <- data.frame(
+      Variavel = rownames(coeficientes),
+      `Coeficiente (Beta)` = betas,
+      `Odds Ratio (OR)` = odds_ratios,
+      `P-Value` = round(p_values_final, 4),
+      `IC 2.5%` = ic[, 1],
+      `IC 97.5%` = ic[, 2],
+      check.names = FALSE
+    )
+    
+    # Tirar o Intercepto do gráfico e da tabela
+    conf_grafico <- conf_grafico %>% filter(Variavel != "(Intercept)")
+    
+    nome_stats <- file.path(pasta_origem, sprintf('Estatisticas_Logistica_%s.xlsx', nome_base))
+    write_xlsx(conf_grafico, nome_stats)
+    
+    # --- MELHORIA 3: GERAÇÃO DE GRÁFICOS EXPLICATIVOS ---
+    cat("   📊 Gerando gráficos explicativos do modelo...\n")
+    
+    conf_grafico_sorted <- conf_grafico %>% arrange(desc(`Odds Ratio (OR)`))
+    
+    p <- ggplot(conf_grafico_sorted, aes(x = `Odds Ratio (OR)`, y = reorder(Variavel, `Odds Ratio (OR)`), fill = `Odds Ratio (OR)`)) +
+      geom_bar(stat = "identity") +
+      scale_fill_viridis_c() +
+      geom_vline(xintercept = 1, color = "red", linetype = "dashed", size = 1) +
+      labs(
+        title = sprintf('Impacto das Variáveis (Odds Ratio) - %s', nome_base),
+        x = 'Chance (Odds Ratio) - Valores > 1 aumentam a propensão',
+        y = 'Variáveis Selecionadas',
+        fill = "OR"
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", margin = margin(b = 15)),
+        axis.title = element_text(size = 12)
+      )
+    
+    nome_grafico <- file.path(pasta_origem, sprintf('Grafico_OddsRatio_%s.png', nome_base))
+    ggsave(nome_grafico, plot = p, width = 12, height = 8, dpi = 300)
+    
+    # --- EXPORTAÇÃO 2: ARQUIVO FINAL SCORADO (FILTRADO) ---
+    df_train_out <- df_train %>% select(internal_row_id)
+    df_train_out$Probabilidade <- predict(modelo_final, newdata = df_train, type = "response")
+    df_train_out[[col_alvo]] <- df_train[[col_alvo_safe]]
+    
+    df_test_out <- df_test %>% select(internal_row_id)
+    df_test_out$Probabilidade <- y_prob_test
+    df_test_out[[col_alvo]] <- df_test[[col_alvo_safe]]
+    
+    df_resultados <- bind_rows(df_train_out, df_test_out)
+    
+    # Join com dados originais (usando o id da linha criado no começo)
+    df_final <- df_resultados %>% 
+      left_join(df_dados_originais, by = "internal_row_id") %>%
+      select(-internal_row_id)
+    
+    # Filtrando apenas quem não é investidor
+    df_final <- df_final %>% filter(!!sym(col_alvo) == 0)
+    
+    cols_finais_ordenadas <- intersect(
+      c(colunas_exportacao_final, "Probabilidade", col_alvo), 
+      colnames(df_final)
+    )
+    
+    df_final <- df_final %>% 
+      select(all_of(cols_finais_ordenadas)) %>%
+      arrange(desc(Probabilidade))
+    
+    nome_final <- file.path(pasta_origem, sprintf('Scoring_Logistica_%s.xlsx', nome_base))
+    write_xlsx(df_final, nome_final)
+    
+    cat("   💾 Arquivos salvos: Base Tratada, Scoring, Estatísticas e Gráfico!\n")
+    
+  }, error = function(e) {
+    cat(sprintf("   ❌ Erro ao processar %s: %s\n", nome_base, e$message))
+  })
+}
+
+cat("\n", strrep("=", 70), "\n")
+cat("🎉 AUTOMAÇÃO DE REGRESSÃO LOGÍSTICA CONCLUÍDA!\n")
